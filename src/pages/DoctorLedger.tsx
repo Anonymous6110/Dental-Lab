@@ -1,0 +1,469 @@
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
+import { 
+  ChevronLeft, Wallet, Receipt, 
+  ArrowUpRight, ArrowDownRight, 
+  Calendar, FileText, DollarSign,
+  Briefcase, CheckCircle2, Clock,
+  Plus, X, Save, CreditCard
+} from "lucide-react";
+import { Doctor, DentalCase, Payment } from "../types";
+import { format } from "date-fns";
+import { toast } from "react-hot-toast";
+import { AnimatePresence } from "motion/react";
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export default function DoctorLedger() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [doctor, setDoctor] = useState<Doctor | null>(null);
+  const [cases, setCases] = useState<DentalCase[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [stats, setStats] = useState({ total_cases: 0, pending_cases: 0, delivered_cases: 0, total_bill: 0, total_paid: 0, outstanding_balance: 0 });
+  const [loading, setLoading] = useState(true);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
+  const [uninvoicedCases, setUninvoicedCases] = useState<DentalCase[]>([]);
+  const [selectedCases, setSelectedCases] = useState<number[]>([]);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: "",
+    payment_method: "Cash",
+    reference_no: "",
+    payment_date: format(new Date(), 'yyyy-MM-dd'),
+    notes: ""
+  });
+
+  useEffect(() => {
+    fetchData();
+    fetchUninvoicedCases();
+  }, [id]);
+
+  const fetchUninvoicedCases = async () => {
+    try {
+      const res = await fetch(`/api/doctors/${id}/cases?uninvoiced=true`);
+      const data = await res.json();
+      setUninvoicedCases(data);
+    } catch (err) {
+      console.error("Failed to fetch uninvoiced cases");
+    }
+  };
+
+  const handleRecordPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch("/api/payments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...paymentForm,
+          doctor_id: Number(id),
+          amount: Number(paymentForm.amount)
+        })
+      });
+      if (res.ok) {
+        toast.success("Payment recorded successfully");
+        setIsPaymentModalOpen(false);
+        setPaymentForm({
+          amount: "",
+          payment_method: "Cash",
+          reference_no: "",
+          payment_date: format(new Date(), 'yyyy-MM-dd'),
+          notes: ""
+        });
+        fetchData();
+      }
+    } catch (err) {
+      toast.error("Failed to record payment");
+    }
+  };
+
+  const handleGenerateInvoice = async () => {
+    if (selectedCases.length === 0) {
+      toast.error("Please select at least one case");
+      return;
+    }
+
+    const items = uninvoicedCases
+      .filter(c => selectedCases.includes(c.id))
+      .map(c => ({
+        case_id: c.id,
+        description: `${c.case_type} - ${c.patient_name}`,
+        amount: c.cost
+      }));
+
+    const totalAmount = items.reduce((sum, item) => sum + item.amount, 0);
+
+    try {
+      const res = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          doctor_id: Number(id),
+          amount: totalAmount,
+          due_date: format(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'), // 7 days from now
+          items
+        })
+      });
+
+      if (res.ok) {
+        toast.success("Invoice generated successfully");
+        setIsInvoiceModalOpen(false);
+        setSelectedCases([]);
+        fetchData();
+        fetchUninvoicedCases();
+      }
+    } catch (err) {
+      toast.error("Failed to generate invoice");
+    }
+  };
+
+  const fetchData = async () => {
+    try {
+      const [docRes, casesRes, payRes, statsRes] = await Promise.all([
+        fetch(`/api/doctors`).then(res => res.json()),
+        fetch(`/api/cases`).then(res => res.json()),
+        fetch(`/api/payments`).then(res => res.json()),
+        fetch(`/api/reports/doctor-ledger/${id}`).then(res => res.json())
+      ]);
+      
+      const currentDoc = docRes.find((d: Doctor) => d.id === Number(id));
+      setDoctor(currentDoc);
+      setCases(casesRes.filter((c: DentalCase) => c.doctor_id === Number(id)));
+      setPayments(payRes.filter((p: Payment) => p.doctor_id === Number(id)));
+      setStats(statsRes);
+      setLoading(false);
+    } catch (err) {
+      toast.error("Failed to load ledger data");
+    }
+  };
+
+  if (loading || !doctor) return <div className="flex items-center justify-center h-64">Loading...</div>;
+
+  return (
+    <div className="space-y-8">
+      <header className="flex items-center justify-between">
+        <div className="flex items-center">
+          <button onClick={() => navigate(-1)} className="p-2 hover:bg-zinc-100 rounded-full mr-4 transition-colors">
+            <ChevronLeft size={24} />
+          </button>
+          <div>
+            <h1 className="text-3xl font-bold text-zinc-900">{doctor.name}</h1>
+            <p className="text-zinc-500 mt-1">Financial Ledger & Case History • {doctor.clinic_name}</p>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => setIsInvoiceModalOpen(true)}
+            className="flex items-center px-4 py-2.5 bg-white border border-zinc-200 text-zinc-700 font-bold rounded-xl hover:bg-zinc-50 transition-all shadow-sm"
+          >
+            <Receipt size={18} className="mr-2" /> Generate Invoice
+          </button>
+          <button 
+            onClick={() => setIsPaymentModalOpen(true)}
+            className="flex items-center px-4 py-2.5 bg-emerald-500 text-white font-bold rounded-xl hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+          >
+            <Plus size={18} className="mr-2" /> Record Payment
+          </button>
+        </div>
+      </header>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center">
+              <FileText size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-full uppercase tracking-wider">Total Billed</span>
+          </div>
+          <h3 className="text-2xl font-bold text-zinc-900">${(stats.total_bill || 0).toLocaleString()}</h3>
+          <p className="text-xs text-zinc-400 mt-1">From {stats.total_cases} total cases</p>
+        </div>
+
+        <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center">
+              <DollarSign size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase tracking-wider">Total Paid</span>
+          </div>
+          <h3 className="text-2xl font-bold text-zinc-900">${(stats.total_paid || 0).toLocaleString()}</h3>
+          <p className="text-xs text-zinc-400 mt-1">Payments received to date</p>
+        </div>
+
+        <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="w-10 h-10 bg-rose-500 text-white rounded-xl flex items-center justify-center">
+              <Wallet size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-1 rounded-full uppercase tracking-wider">Outstanding</span>
+          </div>
+          <h3 className="text-2xl font-bold text-rose-700">${(stats.outstanding_balance || 0).toLocaleString()}</h3>
+          <p className="text-xs text-rose-400 mt-1">Remaining balance due</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Recent Cases */}
+        <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-zinc-100 bg-zinc-50/50 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-zinc-900 flex items-center">
+              <Briefcase size={20} className="mr-2 text-emerald-500" /> Recent Cases
+            </h2>
+          </div>
+          <div className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-zinc-50/50">
+                  <tr>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Case ID</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Patient</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Status</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider text-right">Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-50">
+                  {cases.slice(0, 10).map((c) => (
+                    <tr key={c.id} className="hover:bg-zinc-50/50 transition-colors cursor-pointer" onClick={() => navigate(`/cases/${c.id}`)}>
+                      <td className="px-6 py-4 text-sm font-mono text-zinc-400">#{c.id.toString().padStart(4, '0')}</td>
+                      <td className="px-6 py-4 text-sm font-bold text-zinc-900">{c.patient_name}</td>
+                      <td className="px-6 py-4">
+                        <span className="text-[10px] font-bold px-2 py-1 bg-zinc-100 text-zinc-600 rounded-md uppercase">
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-bold text-zinc-900 text-right">${(c.cost || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* Recent Payments */}
+        <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-zinc-100 bg-zinc-50/50 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-zinc-900 flex items-center">
+              <DollarSign size={20} className="mr-2 text-emerald-500" /> Payment History
+            </h2>
+          </div>
+          <div className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-zinc-50/50">
+                  <tr>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Date</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Method</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Ref No</th>
+                    <th className="px-6 py-4 text-[10px] font-bold text-zinc-400 uppercase tracking-wider text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-50">
+                  {payments.slice(0, 10).map((p) => (
+                    <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
+                      <td className="px-6 py-4 text-sm text-zinc-600">{format(new Date(p.payment_date), 'MMM d, yyyy')}</td>
+                      <td className="px-6 py-4">
+                        <span className="text-[10px] font-bold px-2 py-1 bg-emerald-50 text-emerald-600 rounded-md uppercase border border-emerald-100">
+                          {p.payment_method}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-zinc-400 font-mono">{p.reference_no || "-"}</td>
+                      <td className="px-6 py-4 text-sm font-bold text-emerald-600 text-right">${(p.amount || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Modals */}
+      <AnimatePresence>
+        {isPaymentModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-8 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+                <div>
+                  <h2 className="text-2xl font-bold text-zinc-900">Record Payment</h2>
+                  <p className="text-sm text-zinc-500 mt-1">Enter payment details for {doctor.name}</p>
+                </div>
+                <button onClick={() => setIsPaymentModalOpen(false)} className="p-2 hover:bg-zinc-200 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <form onSubmit={handleRecordPayment} className="p-8 space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Amount</label>
+                    <div className="relative">
+                      <DollarSign size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                      <input 
+                        required
+                        type="number" 
+                        className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all font-bold"
+                        value={paymentForm.amount}
+                        onChange={(e) => setPaymentForm({...paymentForm, amount: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Date</label>
+                    <input 
+                      required
+                      type="date" 
+                      className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      value={paymentForm.payment_date}
+                      onChange={(e) => setPaymentForm({...paymentForm, payment_date: e.target.value})}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Payment Method</label>
+                  <select 
+                    className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    value={paymentForm.payment_method}
+                    onChange={(e) => setPaymentForm({...paymentForm, payment_method: e.target.value})}
+                  >
+                    <option value="Cash">Cash</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Check">Check</option>
+                    <option value="Online">Online</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Reference Number</label>
+                  <input 
+                    type="text" 
+                    placeholder="Check # or Transaction ID"
+                    className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    value={paymentForm.reference_no}
+                    onChange={(e) => setPaymentForm({...paymentForm, reference_no: e.target.value})}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Notes</label>
+                  <textarea 
+                    className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all resize-none"
+                    rows={3}
+                    value={paymentForm.notes}
+                    onChange={(e) => setPaymentForm({...paymentForm, notes: e.target.value})}
+                  />
+                </div>
+
+                <button 
+                  type="submit"
+                  className="w-full px-6 py-4 bg-emerald-500 text-white font-bold rounded-2xl hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 flex items-center justify-center"
+                >
+                  <Save size={20} className="mr-2" /> Save Payment
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isInvoiceModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl overflow-hidden"
+            >
+              <div className="p-8 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+                <div>
+                  <h2 className="text-2xl font-bold text-zinc-900">Generate Invoice</h2>
+                  <p className="text-sm text-zinc-500 mt-1">Select uninvoiced cases for {doctor.name}</p>
+                </div>
+                <button onClick={() => setIsInvoiceModalOpen(false)} className="p-2 hover:bg-zinc-200 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="p-8 space-y-6">
+                {uninvoicedCases.length > 0 ? (
+                  <>
+                    <div className="max-h-[400px] overflow-y-auto pr-2 space-y-2">
+                      {uninvoicedCases.map(c => (
+                        <div 
+                          key={c.id}
+                          onClick={() => {
+                            if (selectedCases.includes(c.id)) {
+                              setSelectedCases(selectedCases.filter(id => id !== c.id));
+                            } else {
+                              setSelectedCases([...selectedCases, c.id]);
+                            }
+                          }}
+                          className={cn(
+                            "p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between",
+                            selectedCases.includes(c.id) 
+                              ? "bg-emerald-50 border-emerald-200 shadow-sm" 
+                              : "bg-white border-zinc-100 hover:border-zinc-200"
+                          )}
+                        >
+                          <div className="flex items-center">
+                            <div className={cn(
+                              "w-5 h-5 rounded-md border flex items-center justify-center mr-4 transition-colors",
+                              selectedCases.includes(c.id) ? "bg-emerald-500 border-emerald-500" : "border-zinc-200"
+                            )}>
+                              {selectedCases.includes(c.id) && <CheckCircle2 size={14} className="text-white" />}
+                            </div>
+                            <div>
+                              <p className="font-bold text-zinc-900">{c.patient_name}</p>
+                              <p className="text-xs text-zinc-500">{c.case_type} • {format(new Date(c.created_at), 'MMM d, yyyy')}</p>
+                            </div>
+                          </div>
+                          <p className="font-bold text-zinc-900">${c.cost.toLocaleString()}</p>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="pt-6 border-t border-zinc-100 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-zinc-500">Selected {selectedCases.length} cases</p>
+                        <p className="text-xl font-bold text-zinc-900">
+                          Total: ${uninvoicedCases.filter(c => selectedCases.includes(c.id)).reduce((sum, c) => sum + c.cost, 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={handleGenerateInvoice}
+                        disabled={selectedCases.length === 0}
+                        className="px-8 py-4 bg-emerald-500 text-white font-bold rounded-2xl hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50 disabled:shadow-none"
+                      >
+                        Generate Invoice
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 bg-zinc-100 text-zinc-400 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Receipt size={32} />
+                    </div>
+                    <h3 className="text-lg font-bold text-zinc-900">No uninvoiced cases</h3>
+                    <p className="text-zinc-500 mt-1">All cases for this doctor have already been invoiced.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
